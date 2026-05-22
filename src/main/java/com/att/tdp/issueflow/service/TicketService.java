@@ -1,5 +1,6 @@
 package com.att.tdp.issueflow.service;
 
+import com.att.tdp.issueflow.dto.ProjectDTO.WorkloadDTO;
 import com.att.tdp.issueflow.dto.TicketDTO.AddTicketDTO;
 import com.att.tdp.issueflow.dto.TicketDTO.TicketResponseDTO;
 import com.att.tdp.issueflow.dto.TicketDTO.UpdateTicketDTO;
@@ -14,6 +15,7 @@ import com.att.tdp.issueflow.repository.ProjectRepository;
 import com.att.tdp.issueflow.repository.TicketRepository;
 import com.att.tdp.issueflow.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -29,12 +31,24 @@ public class TicketService {
     private final TicketRepository ticketRepository;
     private final ProjectRepository projectRepository;
     private final UserRepository userRepository;
+    private final AuditLogService auditLogService;
 
     public TicketResponseDTO createTicket(AddTicketDTO dto) {
         Project project = projectRepository.findById(dto.getProjectId())
                 .orElseThrow(() -> new ResourceNotFoundException("Project not found with id: " + dto.getProjectId()));
 
-        User assignee = resolveAssignee(dto.getAssigneeId());
+        User assignee;
+        if (dto.getAssigneeId() != null) {
+            assignee = resolveAssignee(dto.getAssigneeId());
+        } else {
+            List<WorkloadDTO> workload = userRepository.findDeveloperWorkloadByProjectId(dto.getProjectId());
+            if (!workload.isEmpty()) {
+                assignee = userRepository.findById(workload.get(0).getUserId())
+                        .orElseThrow(() -> new ResourceNotFoundException("User not found during auto-assignment"));
+            } else {
+                assignee = null;
+            }
+        }
 
         Ticket ticket = Ticket.builder()
                 .title(dto.getTitle())
@@ -44,15 +58,29 @@ public class TicketService {
                 .priority(dto.getPriority())
                 .type(dto.getType())
                 .assignee(assignee)
+                .dueDate(dto.getDueDate())
                 .build();
 
-        return toResponseDTO(ticketRepository.save(ticket));
+        Ticket saved = ticketRepository.save(ticket);
+
+        if (dto.getAssigneeId() == null && assignee != null) {
+            auditLogService.logAction(saved.getId(), "AUTO_ASSIGN", "SYSTEM",
+                    "Ticket automatically assigned to user ID: " + assignee.getId());
+        }
+
+        return toResponseDTO(saved);
     }
 
     public TicketResponseDTO getTicketById(Long id) {
         Ticket ticket = ticketRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket not found with id: " + id));
         return toResponseDTO(ticket);
+    }
+
+    public List<TicketResponseDTO> getAllTickets() {
+        return ticketRepository.findAll().stream()
+                .map(this::toResponseDTO)
+                .toList();
     }
 
     public List<TicketResponseDTO> getTicketsByProject(Long projectId) {
@@ -74,15 +102,31 @@ public class TicketService {
 
         if (dto.getStatus() != null && dto.getStatus() != ticket.getStatus()) {
             validateStatusTransition(ticket.getStatus(), dto.getStatus());
+            if (dto.getStatus() == Status.DONE) {
+                boolean hasOpenBlockers = ticket.getDependsOn().stream()
+                        .anyMatch(dep -> dep.getStatus() != Status.DONE);
+                if (hasOpenBlockers) {
+                    throw new BadRequestException("Cannot close ticket: dependent tickets are not yet DONE.");
+                }
+            }
+            Status previousStatus = ticket.getStatus();
             ticket.setStatus(dto.getStatus());
+            String performer = SecurityContextHolder.getContext().getAuthentication().getName();
+            auditLogService.logAction(id, "STATUS_CHANGE", performer,
+                    "Status changed from " + previousStatus + " to " + dto.getStatus());
         }
 
-        if (dto.getPriority() != null) {
+        if (dto.getPriority() != null && dto.getPriority() != ticket.getPriority()) {
             ticket.setPriority(dto.getPriority());
+            ticket.setOverdue(false);
         }
 
         if (dto.getAssigneeId() != null) {
             ticket.setAssignee(resolveAssignee(dto.getAssigneeId()));
+        }
+
+        if (dto.getDueDate() != null) {
+            ticket.setDueDate(dto.getDueDate());
         }
 
         return toResponseDTO(ticketRepository.save(ticket));
@@ -97,17 +141,27 @@ public class TicketService {
         ticketRepository.delete(ticket);
     }
 
-    // TODO (Section 3.8 – Auto Assignment):
-    //   On createTicket, when assigneeId is absent, query all DEVELOPER users and select the one
-    //   with the fewest non-DONE tickets in the same project (workload count).
-    //   Ties are broken by earliest createdAt (oldest registrant first).
-    //   If no DEVELOPER exists in the project, leave assignee null without error.
-    //   Record each auto-assignment in the Audit Log with actor=SYSTEM, action=AUTO_ASSIGN.
+    public void addDependency(Long ticketId, Long dependsOnId) {
+        if (ticketId.equals(dependsOnId)) {
+            throw new BadRequestException("A ticket cannot depend on itself.");
+        }
+        Ticket ticket = ticketRepository.findById(ticketId)
+                .orElseThrow(() -> new ResourceNotFoundException("Ticket not found with id: " + ticketId));
+        Ticket blocker = ticketRepository.findById(dependsOnId)
+                .orElseThrow(() -> new ResourceNotFoundException("Ticket not found with id: " + dependsOnId));
+        if (!ticket.getProject().getId().equals(blocker.getProject().getId())) {
+            throw new BadRequestException("Both tickets must belong to the same project.");
+        }
+        ticket.getDependsOn().add(blocker);
+        ticketRepository.save(ticket);
+    }
 
-    // TODO (Section 3.2 – Ticket Dependencies / checkDependenciesBeforeClose):
-    //   In validateStatusTransition, when next==DONE, fetch the ticket's blocker list and verify
-    //   every blocking ticket is already DONE.
-    //   Throw: new BadRequestException("Cannot close ticket: blocking dependencies are still open.")
+    public void removeDependency(Long ticketId, Long dependsOnId) {
+        Ticket ticket = ticketRepository.findById(ticketId)
+                .orElseThrow(() -> new ResourceNotFoundException("Ticket not found with id: " + ticketId));
+        ticket.getDependsOn().removeIf(dep -> dep.getId().equals(dependsOnId));
+        ticketRepository.save(ticket);
+    }
 
     private void validateStatusTransition(Status current, Status next) {
         int currentIdx = LIFECYCLE.indexOf(current);
@@ -140,6 +194,8 @@ public class TicketService {
                 .type(ticket.getType())
                 .projectId(ticket.getProject().getId())
                 .assigneeId(ticket.getAssignee() != null ? ticket.getAssignee().getId() : null)
+                .dueDate(ticket.getDueDate())
+                .isOverdue(ticket.isOverdue())
                 .createdAt(ticket.getCreatedAt())
                 .updatedAt(ticket.getUpdatedAt())
                 .build();

@@ -1,9 +1,11 @@
 package com.att.tdp.issueflow.repository;
 
+import com.att.tdp.issueflow.entities.Status;
 import com.att.tdp.issueflow.entities.Ticket;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Repository
@@ -12,4 +14,6 @@ public interface TicketRepository extends JpaRepository<Ticket, Long> {
     List<Ticket> findByProjectId(Long projectId);
 
     List<Ticket> findByAssigneeId(Long assigneeId);
+
+    List<Ticket> findByDueDateBeforeAndStatusNot(LocalDateTime time, Status status);
 }

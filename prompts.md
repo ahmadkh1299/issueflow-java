@@ -154,3 +154,229 @@ Please read the API table in the `README.md` and the functional requirements in 
 
 Audit all other DTOs and ensure no required properties from the documentation are missing.
 """
+
+## Phase 11: Implementing the REST Controllers (Claude Code)
+Please implement the REST Controller layer for Users, Projects, Tickets, and Comments under `com.att.tdp.issueflow.controller`. 
+
+CRITICAL: You must strictly adhere to the exact HTTP verbs and paths defined in the grading contract. Use `@RestController`. Inject services via `@RequiredArgsConstructor`. Apply `@Valid` on all request bodies.
+
+Please create the following controllers:
+
+1. `UserController.java`
+   - `POST /users/update/{userId}`: Update user details (accepts `UpdateUserDTO`). Note the non-standard POST verb.
+   - (Skip login/register for now, we will do Auth next).
+
+2. `ProjectController.java` (Base: `/projects`)
+   - `POST /`: Create project (accepts `AddProjectDTO`).
+   - `GET /`: Fetch all projects.
+   - `GET /{projectId}`: Fetch single project.
+   - `PATCH /{projectId}`: Update project (accepts `UpdateProjectDTO`). Note the PATCH verb.
+   - `DELETE /{projectId}`: Soft delete project.
+
+3. `TicketController.java` (Base: `/tickets`)
+   - `POST /`: Create ticket (accepts `AddTicketDTO`).
+   - `GET /{ticketId}`: Fetch single ticket.
+   - `GET /`: Fetch tickets by project. Must use a query parameter (e.g., `?projectId=1`).
+   - `PATCH /{ticketId}`: Update ticket (accepts `UpdateTicketDTO`). Note the PATCH verb.
+   - `DELETE /{ticketId}`: Soft delete ticket.
+
+4. `CommentController.java` 
+   - Note: Do NOT use a generic /comments base path. These must be nested under tickets.
+   - `POST /tickets/{ticketId}/comments`: Add comment (accepts `AddCommentDTO`).
+   - `GET /tickets/{ticketId}/comments`: Fetch all comments for a ticket.
+
+Ensure all paths, path variables (`{projectId}`, `{ticketId}`), and HTTP verbs match this layout exactly.
+
+## Phase 12: Adding Security Dependencies (Claude Code)
+Update the pom.xml file to add the dependencies required for Spring Security and JWT authentication to fulfill the project requirement: "The system must protect all API endpoints using JWT-based authentication."
+Please add the following dependencies:
+
+spring-boot-starter-security
+java-jwt (groupId: com.auth0, artifactId: java-jwt, latest 4.x version) OR the jjwt library suite (api, impl, and jackson).
+Ensure that you ONLY add these new dependencies. Do not remove, downgrade, or alter any of the existing dependencies (such as commons-csv, spring-boot-starter-data-jpa, postgresql, or lombok). Keep the formatting consistent.
+
+
+## Phase 13: The JWT Utility (Claude Code)
+Please create a JWT utility class for our authentication system under a new package: `com.att.tdp.issueflow.security`. 
+
+Create a file named `JwtUtil.java` with the following requirements:
+1. Annotate the class with `@Component` so Spring can manage it.
+2. Use `@Value` to inject a secret key and expiration time. Provide safe fallback defaults in the annotation, for example: `@Value("${jwt.secret:MySuperSecretKeyForIssueFlowDevelopment1234567890}")` and `@Value("${jwt.expiration:86400000}")` (24 hours).
+3. Implement a method `public String generateToken(User user)` that builds a JWT. The token subject should be the `username`, and you should add a custom claim for the user's `role`.
+4. Implement a method `public String extractUsername(String token)` to read the subject from the token.
+5. Implement a method `public boolean isTokenValid(String token, UserDetails userDetails)` to check expiration and matching usernames.
+
+Use the exact JWT library that you just added to the `pom.xml` (either `com.auth0.jwt` or `io.jsonwebtoken`). Ensure the code handles signing algorithms securely according to modern standards for that specific library.
+
+
+## Phase 14: Security Filter and User Details Service (Claude Code)
+
+Please implement the components necessary to intercept HTTP requests and load user data for our Spring Security setup under the package `com.att.tdp.issueflow.security`.
+
+Please create the following two files:
+
+1. `CustomUserDetailsService.java`:
+   - Annotate with `@Service`.
+   - Implement Spring Security's `UserDetailsService` interface.
+   - Inject the `UserRepository` using constructor injection.
+   - Implement the `loadUserByUsername(String username)` method. Fetch the user from the database; if not found, throw a `UsernameNotFoundException`.
+   - Map your custom `User` entity to a standard Spring Security `org.springframework.security.core.userdetails.User` object. Ensure you map the user's `role` to a Spring Security `SimpleGrantedAuthority` (e.g., prefixing the role with "ROLE_").
+
+2. `JwtAuthenticationFilter.java`:
+   - Annotate with `@Component`.
+   - Extend `OncePerRequestFilter`.
+   - Inject `JwtUtil` and `CustomUserDetailsService` using constructor injection.
+   - Override the `doFilterInternal` method.
+   - Logic: Extract the "Authorization" header. If it is null or does not start with "Bearer ", call `filterChain.doFilter` and return.
+   - If a token is found, extract it (remove "Bearer ") and pull the username using `JwtUtil.extractUsername()`.
+   - If the username is not null and `SecurityContextHolder.getContext().getAuthentication()` is null, load the `UserDetails` using your `CustomUserDetailsService`.
+   - Validate the token using `JwtUtil.isTokenValid()`. If valid, create a `UsernamePasswordAuthenticationToken`, attach the request details via `new WebAuthenticationDetailsSource().buildDetails(request)`, and set it in the `SecurityContextHolder`.
+   - Always ensure `filterChain.doFilter(request, response)` is called at the end.
+
+
+## Phase 15: The Security Configuration
+
+Please create the main security configuration class for the application under the package `com.att.tdp.issueflow.security`.
+
+Create a file named `SecurityConfig.java` with the following requirements:
+1. Annotate the class with `@Configuration` and `@EnableWebSecurity`.
+2. Inject your custom `JwtAuthenticationFilter` and `CustomUserDetailsService` via constructor injection (Lombok's `@RequiredArgsConstructor`).
+3. Create a `@Bean` for `PasswordEncoder` that returns a new `BCryptPasswordEncoder`.
+4. Create a `@Bean` for `AuthenticationProvider` that returns a `DaoAuthenticationProvider`. Set its UserDetailsService to your custom service and its PasswordEncoder to the BCrypt bean.
+5. Create a `@Bean` for `AuthenticationManager` using `AuthenticationConfiguration.getAuthenticationManager()`.
+6. Create the main `@Bean` for `SecurityFilterChain(HttpSecurity http)`. You must configure it using the modern Lambda DSL (Spring Boot 3 / Spring Security 6 style):
+   - Disable CSRF (`http.csrf(csrf -> csrf.disable())`).
+   - Set session management to stateless (`http.sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))`).
+   - Configure authorization rules: 
+     - Permit all `POST` requests to `/users` (so people can register).
+     - Permit all requests to `/auth/**` (so people can log in and out).
+     - Require authentication for any other request (`anyRequest().authenticated()`).
+   - Set the authentication provider to your custom provider bean.
+   - Add your `jwtAuthenticationFilter` BEFORE the standard `UsernamePasswordAuthenticationFilter`.
+
+## Phase 16: Authentication Controller & Service (Claude Code)
+
+Please implement the final pieces of the JWT Authentication system to satisfy the project requirements.
+
+1. Create the DTOs under `com.att.tdp.issueflow.dto.AuthDTO`:
+   - `LoginRequestDTO.java`: Fields for `username` (@NotBlank) and `password` (@NotBlank).
+   - `AuthResponseDTO.java`: Field for `token` (String).
+
+2. Create the Service under `com.att.tdp.issueflow.service.AuthService`:
+   - Inject `AuthenticationManager`, `JwtUtil`, and your `UserRepository` or `UserService`.
+   - Implement a `login` method that takes `LoginRequestDTO`.
+   - Inside `login`: Use `authenticationManager.authenticate(new UsernamePasswordAuthenticationToken(username, password))`. 
+   - If successful, fetch the User from the database, use `JwtUtil.generateToken(username, role)` to create the token, and return it in an `AuthResponseDTO`.
+
+3. Create the Controller under `com.att.tdp.issueflow.controller.AuthController`:
+   - Base path: `/auth`.
+   - `POST /login`: Accepts `@Valid LoginRequestDTO`, calls `AuthService.login`, and returns the `AuthResponseDTO`.
+   - `POST /logout`: Since JWT is stateless, simply return an HTTP 200 OK with a generic message like "Logged out successfully" (the client will handle deleting the token).
+   - `GET /me`: Get the current username via `SecurityContextHolder.getContext().getAuthentication().getName()`, fetch that user's details from the database, and return them (ensure you do not return the password field).
+
+## Phase 17: Auto-Assignment Feature (Claude Code)
+
+Please implement the Auto-Assignment feature as defined in Section 3.8 of the requirements.
+
+1. Create a DTO `com.att.tdp.issueflow.dto.ProjectDTO.WorkloadDTO`:
+   - Must contain: `Long userId`, `String username`, `Long openTicketCount`.
+
+2. Update `UserRepository` (or create a custom query in `TicketRepository`):
+   - Write a custom JPQL query to calculate developer workloads for a specific project.
+   - The query MUST fetch ALL users where `role = 'DEVELOPER'`.
+   - It should `LEFT JOIN` the `Ticket` entity (filtered by the given `projectId` and `status != 'DONE'`) so developers with 0 tickets are included in the results.
+   - It must return a `List<WorkloadDTO>`.
+   - Order the results by `openTicketCount` ASC, and then by the user's `id` ASC (to handle ties by registration order).
+
+3. Update `ProjectController` and `ProjectService`:
+   - Add the endpoint `GET /projects/{projectId}/workload`.
+   - This endpoint should return the `List<WorkloadDTO>` using the query you just wrote.
+
+4. Update `TicketService.createTicket(AddTicketDTO dto)`:
+   - Before saving the new ticket, check if `dto.getAssigneeId()` is null.
+   - If it is null, fetch the workload list for the project.
+   - If the list is not empty, grab the first user (lowest workload / oldest registrant) and set them as the ticket's assignee.
+   - If the list is empty (no developers exist), leave the assignee as null.
+   - Add a comment `// TODO: Audit Log - record AUTO_ASSIGN action` right after setting the assignee (we will implement the audit log later).
+
+
+## Phase 18: Auto-Escalation Feature (Claude Code)
+
+Please implement the Auto-Escalation feature for Tickets as defined in Section 3.7 of the requirements.
+
+1. Enable Scheduling:
+   - Add `@EnableScheduling` to the main `IssueFlowApplication.java` class so Spring knows to look for background tasks.
+
+2. Update `TicketRepository`:
+   - Add a method to find all overdue, active tickets. For example: 
+     `List<Ticket> findByDueDateBeforeAndStatusNot(LocalDateTime time, Status status);`
+     (We need tickets where the due date is in the past, and the status is NOT 'DONE').
+
+3. Create the Scheduler under `com.att.tdp.issueflow.service.TicketEscalationScheduler`:
+   - Annotate the class with `@Service` and inject the `TicketRepository`.
+   - Create a method called `escalateOverdueTickets()`.
+   - Annotate it with `@Scheduled(cron = "0 * * * * *")`. (This cron expression runs it at the top of every single minute, which is perfect for testing. We can slow it down later).
+   - Inside the method:
+     - Fetch all tickets using the repository method you just made, passing `LocalDateTime.now()` and `Status.DONE`.
+     - For each ticket, apply the escalation logic:
+       - If Priority is LOW -> Change to MEDIUM.
+       - If Priority is MEDIUM -> Change to HIGH.
+       - If Priority is HIGH -> Change to CRITICAL.
+       - If Priority is CRITICAL -> Set the `isOverdue` boolean flag to `true`.
+     - Save all updated tickets back to the repository.
+
+4. Update `TicketService.updateTicket(Long id, UpdateTicketDTO dto)`:
+   - To satisfy the manual override requirement: If the `dto` contains a `priority` that is different from the ticket's current priority, you must clear the escalation flag by setting `ticket.setIsOverdue(false)`.
+
+
+## Phase 19: Ticket Dependencies Feature (Claude Code)
+Please implement the Ticket Dependencies feature as defined in Section 3.2 of the requirements.
+
+1. Update the `Ticket` Entity:
+   - Add a Many-To-Many relationship to represent dependencies (tickets that MUST be completed before this one).
+   - Add this field:
+     @ManyToMany
+     @JoinTable(
+         name = "ticket_dependencies",
+         joinColumns = @JoinColumn(name = "ticket_id"),
+         inverseJoinColumns = @JoinColumn(name = "depends_on_ticket_id")
+     )
+     private Set<Ticket> dependsOn = new HashSet<>();
+
+2. Update `TicketService`:
+   - Add a method `public void addDependency(Long ticketId, Long dependsOnId)`:
+     - Fetch both tickets. 
+     - Ensure a ticket cannot depend on itself (throw a `BadRequestException` if IDs match).
+     - Add the `dependsOn` ticket to the main ticket's `dependsOn` set and save.
+   - Add a method `public void removeDependency(Long ticketId, Long dependsOnId)`:
+     - Fetch the ticket, remove the dependency from the set, and save.
+   - **Crucial Update to `updateTicket`:** - Before saving an updated ticket, check if the incoming DTO is requesting a status change to `DONE`.
+     - If it is `DONE`, loop through the `dependsOn` set. If ANY ticket in that set has a status that is NOT `DONE`, throw an `IllegalStateException` (or a custom 400 Bad Request exception) with a message like "Cannot close ticket: dependent tickets are not yet DONE."
+
+3. Update `TicketController`:
+   - Add `POST /tickets/{id}/dependencies/{dependsOnId}` to call the add method. Return 200 OK.
+   - Add `DELETE /tickets/{id}/dependencies/{dependsOnId}` to call the remove method. Return 204 No Content.
+
+## Phase 20: Audit log feature
+
+Please implement the Audit Log feature to track ticket history and system actions.
+
+1. Create the Entity `com.att.tdp.issueflow.entity.AuditLog`:
+   - Fields: `Long id` (Primary Key), `Long ticketId`, `String action` (e.g., "STATUS_CHANGE", "AUTO_ASSIGN"), `String performedBy` (Username of the person or "SYSTEM"), `LocalDateTime timestamp`, `String details` (e.g., "Status changed from TODO to IN_PROGRESS").
+   - Add standard JPA annotations (`@Entity`, `@Id`, `@GeneratedValue`).
+
+2. Create the DTO `com.att.tdp.issueflow.dto.AuditLogDTO`:
+   - Map all fields from the entity so we can return clean JSON.
+
+3. Create `AuditLogRepository` and `AuditLogService`:
+   - Repository should have a method: `List<AuditLog> findByTicketIdOrderByTimestampDesc(Long ticketId);`
+   - Service should have: `public void logAction(Long ticketId, String action, String performedBy, String details)`
+   - Service should have: `public List<AuditLogDTO> getLogsForTicket(Long ticketId)`
+
+4. Integrate with `TicketService`:
+   - Inject `AuditLogService`.
+   - In `createTicket` (where you left the `// TODO` for Auto-Assign): Call `logAction(ticketId, "AUTO_ASSIGN", "SYSTEM", "Ticket automatically assigned to user ID: " + assigneeId)`.
+   - In `updateTicket`: If the status changes, call `logAction(ticketId, "STATUS_CHANGE", SecurityContextHolder.getContext().getAuthentication().getName(), "Status updated to " + newStatus)`.
+
+5. Update `TicketController`:
+   - Add endpoint `GET /tickets/{id}/audit` to return `List<AuditLogDTO>` by calling the service.

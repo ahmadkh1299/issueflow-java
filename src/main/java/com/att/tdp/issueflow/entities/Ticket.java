@@ -9,7 +9,9 @@ import org.hibernate.annotations.UpdateTimestamp;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 @Entity
 @Table(name = "tickets")
@@ -69,6 +71,17 @@ public class Ticket {
     @Builder.Default
     @Column(nullable = false)
     private boolean isOverdue = false;
+
+    @ManyToMany
+    @JoinTable(
+        name = "ticket_dependencies",
+        joinColumns = @JoinColumn(name = "ticket_id"),
+        inverseJoinColumns = @JoinColumn(name = "depends_on_ticket_id")
+    )
+    @ToString.Exclude
+    @EqualsAndHashCode.Exclude
+    @Builder.Default
+    private Set<Ticket> dependsOn = new HashSet<>();
 
     @Version
     private Long version;
