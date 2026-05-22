@@ -23,18 +23,25 @@ public class User {
     private Long id;
 
     @NotBlank(message = "Username cannot be blank")
+    @Column(unique = true, nullable = false)
     private String username;
 
+    @NotBlank(message = "Password cannot be blank")
+    @Column(nullable = false)
+    private String password;
+
     @NotBlank(message = "Full name cannot be blank")
-    @Column(name = "full_name")
+    @Column(name = "full_name", nullable = false)
     private String fullName;
 
     @NotBlank(message = "Email cannot be blank")
     @Email(message = "Email should be valid")
+    @Column(unique = true, nullable = false)
     private String email;
 
     @NotNull(message = "Role is required")
     @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
     private Role role;
 
     @CreationTimestamp

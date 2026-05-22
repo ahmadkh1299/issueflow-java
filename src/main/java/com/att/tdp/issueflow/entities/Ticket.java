@@ -48,6 +48,31 @@ public class Ticket {
     @Builder.Default
     private List<Comment> comments = new ArrayList<>();
 
+    @NotNull(message = "Status is required")
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    @Builder.Default
+    private Status status = Status.TODO;
+
+    @NotNull(message = "Priority is required")
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private Priority priority;
+
+    @NotNull(message = "Type is required")
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private Type type;
+
+    private LocalDateTime dueDate;
+
+    @Builder.Default
+    @Column(nullable = false)
+    private boolean isOverdue = false;
+
+    @Version
+    private Long version;
+
     @CreationTimestamp
     @Column(updatable = false)
     private LocalDateTime createdAt;

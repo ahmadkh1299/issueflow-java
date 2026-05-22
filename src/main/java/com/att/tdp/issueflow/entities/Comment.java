@@ -39,6 +39,9 @@ public class Comment {
     @EqualsAndHashCode.Exclude
     private User author;
 
+    @Version
+    private Long version;
+
     @CreationTimestamp
     @Column(updatable = false)
     private LocalDateTime createdAt;
