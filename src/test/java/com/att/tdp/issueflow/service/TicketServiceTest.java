@@ -195,4 +195,175 @@ class TicketServiceTest {
 
         assertTrue(ex.getMessage().contains("Invalid status transition"));
     }
+
+    @Test
+    void shouldGetTicketById_success() {
+        Project project = Project.builder().id(1L).name("Proj").build();
+        Ticket ticket = Ticket.builder()
+                .id(7L)
+                .title("Bug")
+                .status(Status.TODO)
+                .priority(Priority.LOW)
+                .type(Type.BUG)
+                .project(project)
+                .build();
+
+        when(ticketRepository.findById(7L)).thenReturn(Optional.of(ticket));
+
+        TicketResponseDTO result = ticketService.getTicketById(7L);
+
+        assertEquals(7L, result.getId());
+        assertEquals("Bug", result.getTitle());
+    }
+
+    @Test
+    void shouldGetTicketById_notFound() {
+        when(ticketRepository.findById(99L)).thenReturn(Optional.empty());
+
+        assertThrows(com.att.tdp.issueflow.exception.ResourceNotFoundException.class,
+                () -> ticketService.getTicketById(99L));
+    }
+
+    @Test
+    void shouldGetTicketsByProject_returnsMappedList() {
+        Project project = Project.builder().id(1L).name("Proj").build();
+        Ticket t1 = Ticket.builder().id(1L).title("T1").status(Status.TODO)
+                .priority(Priority.LOW).type(Type.BUG).project(project).build();
+        Ticket t2 = Ticket.builder().id(2L).title("T2").status(Status.IN_PROGRESS)
+                .priority(Priority.HIGH).type(Type.FEATURE).project(project).build();
+
+        when(ticketRepository.findByProjectId(1L)).thenReturn(List.of(t1, t2));
+
+        List<TicketResponseDTO> result = ticketService.getTicketsByProject(1L);
+
+        assertEquals(2, result.size());
+        assertEquals("T1", result.get(0).getTitle());
+        assertEquals("T2", result.get(1).getTitle());
+    }
+
+    @Test
+    void shouldThrowWhenUpdatingAlreadyDoneTicket() {
+        Ticket ticket = Ticket.builder()
+                .id(5L)
+                .status(Status.DONE)
+                .build();
+
+        UpdateTicketDTO dto = UpdateTicketDTO.builder()
+                .title("Attempt update")
+                .build();
+
+        when(ticketRepository.findById(5L)).thenReturn(Optional.of(ticket));
+
+        BadRequestException ex = assertThrows(BadRequestException.class,
+                () -> ticketService.updateTicket(5L, dto));
+
+        assertTrue(ex.getMessage().contains("DONE and cannot be updated"));
+        verify(ticketRepository, never()).save(any());
+    }
+
+    @Test
+    void shouldThrowWhenAssigningAdminAsAssignee() {
+        Project project = Project.builder().id(1L).name("Proj").build();
+        Ticket ticket = Ticket.builder()
+                .id(6L)
+                .title("Task")
+                .status(Status.TODO)
+                .priority(Priority.MEDIUM)
+                .type(Type.FEATURE)
+                .project(project)
+                .build();
+
+        User admin = User.builder().id(20L).username("admin").role(Role.ADMIN).build();
+
+        UpdateTicketDTO dto = UpdateTicketDTO.builder()
+                .title("Task")
+                .assigneeId(20L)
+                .build();
+
+        when(ticketRepository.findById(6L)).thenReturn(Optional.of(ticket));
+        when(userRepository.findById(20L)).thenReturn(Optional.of(admin));
+
+        BadRequestException ex = assertThrows(BadRequestException.class,
+                () -> ticketService.updateTicket(6L, dto));
+
+        assertTrue(ex.getMessage().contains("ADMIN and cannot be assigned"));
+        verify(ticketRepository, never()).save(any());
+    }
+
+    @Test
+    void shouldDeleteTicket_success() {
+        Ticket ticket = Ticket.builder().id(8L).build();
+
+        when(ticketRepository.findById(8L)).thenReturn(Optional.of(ticket));
+
+        ticketService.deleteTicket(8L);
+
+        verify(ticketRepository).delete(ticket);
+    }
+
+    @Test
+    void shouldDeleteTicket_notFound() {
+        when(ticketRepository.findById(99L)).thenReturn(Optional.empty());
+
+        assertThrows(com.att.tdp.issueflow.exception.ResourceNotFoundException.class,
+                () -> ticketService.deleteTicket(99L));
+        verify(ticketRepository, never()).delete(any());
+    }
+
+    @Test
+    void shouldThrowWhenAddingDependencyOnSelf() {
+        BadRequestException ex = assertThrows(BadRequestException.class,
+                () -> ticketService.addDependency(5L, 5L));
+
+        assertTrue(ex.getMessage().contains("cannot depend on itself"));
+    }
+
+    @Test
+    void shouldThrowWhenAddingCrossProjectDependency() {
+        Project projectA = Project.builder().id(1L).name("A").build();
+        Project projectB = Project.builder().id(2L).name("B").build();
+
+        Ticket ticket = Ticket.builder().id(1L).project(projectA).build();
+        Ticket blocker = Ticket.builder().id(2L).project(projectB).build();
+
+        when(ticketRepository.findById(1L)).thenReturn(Optional.of(ticket));
+        when(ticketRepository.findById(2L)).thenReturn(Optional.of(blocker));
+
+        BadRequestException ex = assertThrows(BadRequestException.class,
+                () -> ticketService.addDependency(1L, 2L));
+
+        assertTrue(ex.getMessage().contains("same project"));
+    }
+
+    @Test
+    void shouldAddDependency_success() {
+        Project project = Project.builder().id(1L).name("Proj").build();
+        Ticket ticket = Ticket.builder().id(1L).project(project).build();
+        Ticket blocker = Ticket.builder().id(2L).project(project).build();
+
+        when(ticketRepository.findById(1L)).thenReturn(Optional.of(ticket));
+        when(ticketRepository.findById(2L)).thenReturn(Optional.of(blocker));
+        when(ticketRepository.save(any())).thenReturn(ticket);
+
+        ticketService.addDependency(1L, 2L);
+
+        assertTrue(ticket.getDependsOn().contains(blocker));
+        verify(ticketRepository).save(ticket);
+    }
+
+    @Test
+    void shouldRemoveDependency_success() {
+        Project project = Project.builder().id(1L).name("Proj").build();
+        Ticket blocker = Ticket.builder().id(2L).project(project).build();
+        Ticket ticket = Ticket.builder().id(1L).project(project).build();
+        ticket.getDependsOn().add(blocker);
+
+        when(ticketRepository.findById(1L)).thenReturn(Optional.of(ticket));
+        when(ticketRepository.save(any())).thenReturn(ticket);
+
+        ticketService.removeDependency(1L, 2L);
+
+        assertFalse(ticket.getDependsOn().contains(blocker));
+        verify(ticketRepository).save(ticket);
+    }
 }
